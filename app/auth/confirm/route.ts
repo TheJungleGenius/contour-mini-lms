@@ -1,30 +1,38 @@
-import { createClient } from "@/lib/supabase/server";
 import { type EmailOtpType } from "@supabase/supabase-js";
 import { redirect } from "next/navigation";
 import { type NextRequest } from "next/server";
+import type { AuthErrorCode } from "@/lib/auth/auth-errors";
+import { safeRedirectPath } from "@/lib/auth/safe-redirect";
+import { createClient } from "@/lib/supabase/server";
 
+// The email link types Supabase Auth sends; anything else is rejected.
+const EMAIL_OTP_TYPES: readonly EmailOtpType[] = [
+  "signup",
+  "invite",
+  "magiclink",
+  "recovery",
+  "email_change",
+  "email",
+];
+
+const isEmailOtpType = (value: string | null): value is EmailOtpType =>
+  value !== null && (EMAIL_OTP_TYPES as readonly string[]).includes(value);
+
+const errorPage = (code: AuthErrorCode) => `/auth/error?code=${code}`;
+
+/** Landing route for email links (sign-up confirmation, password reset). */
 export async function GET(request: NextRequest) {
-  const { searchParams } = new URL(request.url);
-  const token_hash = searchParams.get("token_hash");
-  const type = searchParams.get("type") as EmailOtpType | null;
-  const next = searchParams.get("next") ?? "/";
+  const { searchParams, origin } = new URL(request.url);
+  const tokenHash = searchParams.get("token_hash");
+  const type = searchParams.get("type");
+  // The template passed `next` straight to redirect(), an open redirect.
+  const next = safeRedirectPath(searchParams.get("next"), origin);
 
-  if (token_hash && type) {
-    const supabase = await createClient();
+  if (!tokenHash || !isEmailOtpType(type)) redirect(errorPage("missing_token"));
 
-    const { error } = await supabase.auth.verifyOtp({
-      type,
-      token_hash,
-    });
-    if (!error) {
-      // redirect user to specified redirect URL or root of app
-      redirect(next);
-    } else {
-      // redirect the user to an error page with some instructions
-      redirect(`/auth/error?error=${error?.message}`);
-    }
-  }
-
-  // redirect the user to an error page with some instructions
-  redirect(`/auth/error?error=No token hash or type`);
+  const supabase = await createClient();
+  const { error } = await supabase.auth.verifyOtp({ type, token_hash: tokenHash });
+  // Supabase's message isn't shown to the user: the error page only displays
+  // fixed messages, so a crafted URL can't put arbitrary text on screen.
+  redirect(error ? errorPage("invalid_link") : next);
 }
